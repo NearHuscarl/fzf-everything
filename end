@@ -1,0 +1,86 @@
+#!/bin/env bash
+
+# Usage:
+# $ ./end
+
+# Dependencies:
+# fzf
+
+set -o errexit
+set -o pipefail
+set -o nounset
+# set -o xtrace
+
+BLUE="$(tput setaf 4)"
+MAGENTA="$(tput setaf 5)"
+CYAN="$(tput setaf 6)"
+RESET="$(tput sgr0)"
+
+SCRIPT_NAME=$(basename "$0")
+USAGE="$MAGENTA"'USAGE: '"${CYAN}$SCRIPT_NAME${RESET}"' [help|<signal>]'
+HELP="\
+${MAGENTA}DESCRIPTION:${RESET}
+  Kill process by typing the process name using fzf
+${MAGENTA}USAGE:${RESET}
+  ${CYAN}$SCRIPT_NAME${RESET} [<command>|<signal>]
+${MAGENTA}COMMANDS:${RESET}
+  ${CYAN}h, help${RESET}      print this help message
+  ${CYAN}<signal>${RESET}     signal number to send to process. Default is 9 (SIGKILL)
+               an alternative is to use signal 15 (SIGTERM) to terminate
+               the program cleanly instead of killing it immediately"
+
+TERM_COLS="$(tput cols)"
+
+function die () { # {{{
+	echo "$*" >&2
+	exit 1
+}
+# }}}
+function usage() { # {{{
+	die "$USAGE"
+}
+# }}}
+function help() { # {{{
+	echo "$HELP"
+}
+# }}}
+function search() { # {{{
+	local header
+	header="$(ps aux | head -n1)"
+	fzf --ansi --multi --header="$header" 
+}
+# }}}
+function color() { # {{{
+	local rplc='^\([^ ]\+ \+\)\([0-9]\+ \+\)\([0-9.]\+ \+[0-9.]\+ \+\)\([0-9]\+ \+[0-9]\+ \+[^ ]\+ \+[^ ]\+ \+\)\([^ ]\+ \+[^ ]\+ \+\)\(.*$\)$'
+	sed 's/'"$rplc"'/'"$MAGENTA"'\1'"$CYAN"'\2'"$BLUE"'\3'"$RESET"'\4'"$MAGENTA"'\5'"$CYAN"'\6'"$RESET"'/'
+}
+# }}}
+function kill_process() { # {{{
+	local signal="${1:-9}"
+	local pid
+
+	pid="$(ps aux | sed 1d | cut -c 1-$(("$TERM_COLS" - 4)) | color | search | awk '{print $2}')"
+	if [[ "$pid" != '' ]]; then # keyboard interruption like CTRL-C
+		echo "$pid" | xargs kill -"$signal"
+	fi
+}
+# }}}
+function main() { # {{{
+	local cmd="${1:-}"
+
+	case "$#" in
+		0)
+			kill_process ;;
+		*)
+			case "$cmd" in
+				-h|--help)
+					help ;;
+				[0-9][0-9])
+					kill_process "$cmd" ;;
+				*)
+					usage ;;
+			esac
+	esac
+}
+main "$@"
+# }}}

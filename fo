@@ -1,0 +1,84 @@
+#!/bin/env bash
+
+# fzf + rifle to open files from anywhere
+
+# Dependencies:
+# ripgrep
+# fzf
+
+# Usage:
+# $ ./fo
+
+set -o errexit
+set -o pipefail
+# set -o nounset
+# set -o xtrace
+
+SCRIPT_NAME=$(basename "$0")
+USAGE="Usage: $SCRIPT_NAME [command]"
+HELP="\
+fzf + rifle to open files from anywhere
+$SCRIPT_NAME [command]
+Commands:
+  -h, --help      print this help message
+  -r, --root      search files in top level git directory
+  -c, --cwd       search files in current directory"
+
+: "${OPEN:=rifle}"
+
+function die() { # {{{
+	echo "$*" >&2
+	exit 1
+}
+# }}}
+function usage() { # {{{
+	die "$USAGE"
+}
+# }}}
+function help() { # {{{
+	echo "$HELP"
+}
+# }}}
+function search() { # {{{
+	fzf --prompt="$OPEN: " --height=30
+}
+# }}}
+function getfiles() { # {{{
+	local path="$1"
+	rg --files --no-ignore-vcs --hidden --follow --no-messages "$path"
+}
+# }}}
+function gitroot() { # {{{
+	git rev-parse --show-toplevel 2> /dev/null
+}
+# }}}
+function open() { # {{{
+	local file where="$1"
+	file="$(getfiles "${where:-$HOME}" | search)"
+	if [[ "$file" != '' ]]; then
+		"$OPEN" "$file"
+	fi
+}
+# }}}
+function main() { # {{{
+	local cmd="$1"
+
+	case "$#" in
+		0)
+			open "$HOME";; # default is to search in home
+		*)
+			case "$cmd" in
+				-h|--help)
+					help ;;
+				-r|--root)
+					open "$(gitroot)" ;;
+				-c|--cwd)
+					open "$(pwd)" ;;
+				*)
+					usage ;;
+			esac
+	esac
+}
+# }}}
+
+main "$@"

@@ -1,0 +1,163 @@
+#!/bin/env bash
+
+# Usage:
+# $ ./manfzf
+
+# Dependencies:
+# fzf
+# vim
+
+RED="$(tput setaf 1)"
+YELLOW="$(tput setaf 3)"
+CYAN="$(tput setaf 6)"
+RESET="$(tput sgr0)"
+
+SCRIPT_NAME=$(basename "$0")
+USAGE="${YELLOW}Usage: ${CYAN}$SCRIPT_NAME${RESET} [commands|<query>]"
+HELP="\
+${YELLOW}USAGE${RESET}:
+  ${CYAN}$SCRIPT_NAME${RESET} [command|<query>]
+${YELLOW}COMMANDS${RESET}:
+  ${CYAN}-h  --help${RESET}           print this help message
+  ${CYAN}-c  --cache${RESET}          use cache to get manpages (slightly faster)
+  ${CYAN}-u  --update-cache${RESET}   update manpage list cache
+  ${CYAN}-v  --vim${RESET}            use vim to read manual
+  ${CYAN}-h  --help${RESET}           print this help message
+${YELLOW}QUERY${RESET}:
+  ${CYAN}<query>${RESET}              read manual of <query>"
+
+: "${MAN_PATH:=/usr/share/man/}"
+: "${MAN_EXT:=gz}"
+: "${MAN_CACHE:="$HOME/.cache/manfzf/manpages"}"
+: "${MAN_PROG:=man}"
+
+: "${USE_CACHE:=false}"
+
+set -o errexit
+set -o pipefail
+set -o nounset
+# set -o xtrace
+
+function die() { # {{{
+	echo "$*" >&2
+	exit 1
+}
+# }}}
+function usage() { # {{{
+	die "$USAGE"
+}
+# }}}
+function help() { # {{{
+	echo "$HELP"
+}
+# }}}
+function get_manpages() { # {{{
+	find "${MAN_PATH}" -iname "*.${MAN_EXT}" -printf '%f\n' | \
+		sed -e 's/\.'"${MAN_EXT}"'//g' | \
+		awk -F '.' '
+			BEGIN {
+				mantype[1] = "Commands"
+				mantype[2] = "System calls"
+				mantype[3] = "Library calls"
+				mantype[4] = "Special files"
+				mantype[5] = "File formats"
+				mantype[6] = "Games"
+				mantype[7] = "Miscellaneous"
+				mantype[8] = "System administration commands"
+				mantype[9] = "Kernel routines"
+			} {
+				printf "%-50s '"$CYAN"'%s'"$RESET"'\n", $0, mantype[substr($NF,1,1)]
+			}
+	' \
+		| sort -u
+}
+# }}}
+function cache_manpages() { # {{{
+	if [[ ! -f "$MAN_CACHE" ]]; then
+		mkdir -p "$(dirname "$MAN_CACHE")" && touch "$MAN_CACHE"
+	fi
+	get_manpages > "$MAN_CACHE"
+}
+# }}}
+function get_cache() { # {{{
+	[[ ! -f "$MAN_CACHE" ]] && cache_manpages
+	cat "$MAN_CACHE"
+}
+# }}}
+function viman() { # {{{
+	if ! type vim &> /dev/null; then
+		die "${RED}Error:${RESET} vim executable not found. Please install vim"
+	fi
+	vim -c "Man $1 ${2:-}" -c 'silent only'
+}
+# }}}
+function search() { # {{{
+	local header
+	header="$(printf '%-50s %s' 'Manpage' 'Section')"
+	fzf --ansi --prompt='manpage: ' --inline-info -0 --header "$header"
+}
+# }}}
+function manfzf() { # {{{
+	local result page=${1:-} section=''
+
+	if [[ ! "$page" ]]; then
+		if [[ "$USE_CACHE" == true ]]; then
+			result="$(get_cache | search | cut -d ' ' -f 1 )"
+		else
+			result="$(get_manpages | search | cut -d ' ' -f 1 )"
+		fi
+		# shellcheck disable=SC2001
+		page="$(echo "$result" | sed 's/\(.*\)\.[^.]*$/\1/')"
+		section="${result##"$page."}"
+	fi
+	"$MAN_PROG" "$section" "$page"
+}
+# }}}
+function main() { # {{{
+	local OPTIND opt page
+
+	while getopts ':hucv-:' opt; do
+		case "${opt}" in
+			-)
+				case ${OPTARG} in # a hack to use --option
+					help)
+						help && exit 0
+						;;
+					update-cache)
+						cache_manpages && exit 0
+						;;
+					cache)
+						USE_CACHE=true
+						;;
+					vim)
+						MAN_PROG=viman
+						;;
+					*)
+						usage
+						;;
+				esac
+				;;
+			h)
+				help && exit 0
+				;;
+			u)
+				cache_manpages && exit 0
+				;;
+			c)
+				USE_CACHE=true
+				;;
+			v)
+				MAN_PROG=viman
+				;;
+			*)
+				usage
+				;;
+		esac
+	done
+	shift $((OPTIND-1))
+	page="${1:-}"
+	manfzf "$page"
+}
+
+main "$@"
+# }}}

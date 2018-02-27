@@ -1,0 +1,71 @@
+#!/bin/env bash
+
+# Dependencies:
+# google chrome
+# fzf
+# rofi
+# sqlite3
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+MAGENTA="$(tput setaf 5)"
+CYAN="$(tput setaf 6)"
+RESET="$(tput sgr0)"
+
+: "${HISTORY_PATH:="$HOME/.config/google-chrome/Default/History"}"
+: "${BROWSER:=google-chrome-stable}"
+
+COLS="$(("$(tput cols)"/2))"
+SEP='{::}'
+TEMP='/tmp/chromehist'
+
+function cleanup() { # {{{
+	local rv="$?"
+	rm -f "$TEMP"
+	return "$rv"
+}
+# }}}
+
+trap cleanup EXIT
+
+function get_history() { # {{{
+	local sqlget=(
+	'SELECT DISTINCT'
+	"strftime('%d/%m/%Y %H:%M:%S', datetime(last_visit_time/1000000-11644473600, 'unixepoch', 'localtime')),"
+	"substr(title, 1, $COLS),"
+	'url'
+	'FROM urls'
+	'ORDER BY last_visit_time'
+	'DESC'
+	)
+
+	cp -f "$HISTORY_PATH" "$TEMP"
+	sqlite3 -separator $SEP "$TEMP" "${sqlget[*]}" |
+		awk -F $SEP '{printf "'"$MAGENTA"'%-20s'"$RESET"' %-'$COLS's '"$CYAN"'%s\n'"$RESET"'", $1, $2, $3}'
+}
+# }}}
+function search() { # {{{
+	local header
+	header="$(printf '%-20s %-'"$COLS"'s %s' 'Date' 'Title' 'Url')"
+	fzf --exact --header "$header" --ansi --multi --prompt 'history: ' | sed 's|.*\(https*://\)|\1|' | tr '\n' ' '
+}
+# }}}
+function chromehist() { # {{{
+	local urls
+	urls="$(get_history | search)"
+	# shellcheck disable=SC2086
+	"$BROWSER" $urls > /dev/null 2> /dev/null
+}
+# }}}
+
+chromehist
+
+# downloads                meta                     urls
+# downloads_slices         segment_usage            visit_source
+# downloads_url_chains     segments                 visits
+# keyword_search_terms     typed_url_sync_metadata
+
+# sqlite3 History "select substr(title, 1, $COLUMNS), url from urls order by last_visit_time desc limit 50;" 2>&1 | vim -
+# sqlite3 -header History 'select * from urls limit 5;' 2>&1 | vim -

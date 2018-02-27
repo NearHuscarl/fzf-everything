@@ -1,0 +1,226 @@
+#!/bin/env bash
+
+# Usage:
+# $ ./downgrade
+
+# Dependencies:
+# $ pacman
+# $ fzf
+
+# set -o errexit
+set -o pipefail
+set -o nounset
+# set -o xtrace
+set -E
+
+RED="$(tput setaf 1)"
+GREEN="$(tput setaf 2)"
+YELLOW="$(tput setaf 3)"
+# BLUE="$(tput setaf 4)"
+# MAGENTA="$(tput setaf 5)"
+CYAN="$(tput setaf 6)"
+# WHITE="$(tput setaf 7)"
+RESET="$(tput sgr0)"
+
+SCRIPT_NAME=$(basename "$0")
+USAGE="${YELLOW}Usage: ${CYAN}$SCRIPT_NAME ${GREEN}[--help]${RESET}"
+HELP="\
+${YELLOW}DESCRIPTION:${RESET}
+  Downgrade package by typing its name and version using fzf
+${YELLOW}USAGE:${RESET}
+  ${CYAN}$SCRIPT_NAME ${GREEN}<command>${RESET}
+${YELLOW}COMMANDS:${RESET}
+  ${CYAN}-h  --help${RESET}      print this help message"
+
+ALA_URL='https://archive.archlinux.org'
+PAC_CACHE='/var/cache/pacman/pkg'
+PAC_CACHE_RE='\/var\/cache\/pacman\/pkg\/'
+EXTENSION='.pkg.tar.xz'
+EXTENSION_RE='\.pkg\.tar\.xz'
+HARDWARE="$(uname -m)"
+
+trap '[ "$?" -ne 55 ] || exit 55' ERR
+
+function die() { # {{{
+	[[ "$#" == 0 ]] && exit 55
+	printf '%s\n' "$*" >&2
+	exit 55
+}
+# }}}
+function usage() { # {{{
+	die "$USAGE"
+}
+# }}}
+function help() { # {{{
+	echo "$HELP"
+} # }}}
+function print_bar() { # {{{
+	local length="$1"
+	seq -s '─' "$length" | sed 's/[0-9]//g'
+}
+# }}}
+function search() { # {{{
+	local prompt="$1"
+	fzf --exact --prompt="$prompt" --height=15 --inline-info -0
+}
+# }}}
+function base_url() { # {{{
+	local pkg_name package="$1"
+	pkg_name="$(get_package_name "$package")"
+	echo "$ALA_URL/packages/${pkg_name:0:1}/$pkg_name/"
+}
+# }}}
+function get_package_name() { # {{{
+	# extract package <name> from <name-version-architecture..> or <name-version>
+	local name version package="$1"
+
+	if [[ "$package" =~ -([0-9].*)$ ]]; then
+		version=${BASH_REMATCH[1]}
+		name=${package%-$version}
+	fi
+	echo "${name:-$package}"
+}
+# }}}
+function get_current_package() { # {{{
+	local package
+	package="$(get_package_name "$1")"
+
+	pacman -Qi "$package" 2> /dev/null | awk -F " : " '
+	/^Name         / { name=$2    };
+	/^Version      / { version=$2 };
+	/^Architecture / { hardware=$2 };
+	END { if (name != "") printf("%s-%s-%s\n", name, version, hardware) }
+	'
+}
+# }}}
+function search_pacman_cache() { # {{{
+	find "$PAC_CACHE" -maxdepth 1 -mindepth 1 -name "${1:-}*" \
+		| sed '/'"$PAC_CACHE_RE"'\(.*\)'"$EXTENSION_RE"'$/!d; s||\1|g' \
+		| sort -n
+}
+# }}}
+function search_archlinux_archive() { # {{{
+	# return a list of urls to download packages
+	local name version index
+
+	name="$(get_package_name "$1")"
+	version='[0-9]'
+	index="$(base_url "$name")"
+
+	curl --fail --silent "$index" | sed '
+	/.* href="\('"$name-$version"'.*\(any\|'"$HARDWARE"'\)\)'"$EXTENSION_RE"'".*/!d;
+	s||\1|g
+	'
+}
+# }}}
+function get_other_packages() { # {{{
+	# get package versions that are not currently installed
+	local package="$1"
+	search_pacman_cache "$(get_package_name "$package")" | sed '/'"$package"'/d'
+}
+# }}}
+function downgrade_from_cache() { # {{{
+	local package="$1"
+	sudo pacman -U "$PAC_CACHE"/"$package""$EXTENSION"
+}
+# }}}
+function downgrade_from_ala() { # {{{
+	local package="$1"
+	sudo pacman -U "$(base_url "$package")""$package""$EXTENSION"
+}
+# }}}
+function input() { # {{{
+	local confirm prompt="$1"
+	read -r -n 1 -p "$prompt" confirm
+	printf '%s' "$confirm"
+}
+# }}}
+function process_responce() { # {{{
+	local char="$1"
+	if [[ "$char" =~ ^[Pp]$ ]]; then
+		choice=local
+	elif [[ "$char" =~ ^[Ss]$ ]]; then
+		choice=remote
+	else
+		die
+	fi
+}
+# }}}
+function ask_to_search_ala() { # {{{
+	local response
+	local search_ala_msg="${CYAN}[s]${RESET}earch ALA for more or ${CYAN}[q]${RESET}uit: "
+	printf '%s\n' "${CYAN}$(print_bar "$((${#search_ala_msg} - 20))")${RESET}"
+
+	response="$(input "$search_ala_msg")"
+	printf '\n'
+	process_responce "$response"
+}
+# }}}
+function ask_to_proceed() { # {{{
+	local package="$1"
+	local response
+	local proceed_msg="${CYAN}[p]${RESET}roceed to downgrade, ${CYAN}[s]${RESET}earch ALA for more or ${CYAN}[q]${RESET}uit: "
+
+	printf 'Current package is %s\n' "${RED}$(get_current_package "$package")${RESET}"
+	printf 'Downgrade to %s?\n' "${GREEN}$package${RESET}"
+	printf '%s\n' "${CYAN}$(print_bar "$((${#proceed_msg} - 30))")${RESET}"
+
+	response="$(input "$proceed_msg")"
+	printf '\n'
+	process_responce "$response"
+}
+# }}}
+function downgrade() { # {{{
+	local selected_pkg
+	local current_pkg
+	choice=''
+
+	# default to search pacman cache first, ALA as fallback
+	selected_pkg="$(search_pacman_cache | search 'Cache: ')"
+	[[ "$selected_pkg" == '' ]] && die "${RED}Keyboard Interrupt${RESET}"
+	current_pkg="$(get_current_package "$selected_pkg")"
+
+	if [[ "$selected_pkg" == "$current_pkg" ]]; then
+		local other_pkg
+
+		printf '%s\n' "${RED}$selected_pkg${RESET} is currently installed"
+		other_pkg="$(get_other_packages "$selected_pkg" | search 'Do you mean: ')"
+
+		if [[ "$other_pkg" == '' ]]; then # search failed when there is no other package
+			ask_to_search_ala
+		else
+			selected_pkg="$other_pkg"
+			ask_to_proceed "$selected_pkg"
+		fi
+	else
+		ask_to_proceed "$selected_pkg"
+	fi
+
+	if [[ "$choice" == local ]]; then
+		downgrade_from_cache "$selected_pkg"
+	elif [[ "$choice" == remote ]]; then
+		selected_pkg="$(search_archlinux_archive "$selected_pkg" | search 'Archlinux Archive: ')"
+		[[ "$selected_pkg" == '' ]] && die "${RED}Keyboard Interrupt${RESET}"
+		downgrade_from_ala "$selected_pkg"
+	fi
+}
+# }}}
+function main() { # {{{
+	local cmd="${1:-}"
+
+	case "$#" in
+		0)
+			downgrade ;;
+		*)
+			case "$cmd" in
+				-h|--help)
+					help ;;
+				*)
+					usage ;;
+			esac
+	esac
+}
+main "$@"
+# }}}
+
+# vim: foldmethod=marker

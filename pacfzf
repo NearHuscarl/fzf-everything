@@ -1,0 +1,308 @@
+#!/bin/env bash
+
+# Dependencies:
+# pacman
+# trizen
+# fzf
+
+# BLACK="$(tput setaf 0)"
+RED="$(tput setaf 1)"
+# GREEN="$(tput setaf 2)"
+YELLOW="$(tput setaf 3)"
+# BLUE="$(tput setaf 4)"
+# MAGENTA="$(tput setaf 5)"
+CYAN="$(tput setaf 6)"
+# WHITE="$(tput setaf 7)"
+RESET="$(tput sgr0)"
+
+SCRIPT_NAME=$(basename "$0")
+USAGE="Usage: $SCRIPT_NAME [help]"
+HELP="\
+${YELLOW}DESCRIPTION:${RESET}
+  A wrapper script to integrate fzf with pacman
+${YELLOW}USAGE:${RESET}
+  $SCRIPT_NAME <command>
+${YELLOW}COMMANDS:
+  ${CYAN}-h  --help               ${RESET}print this help message
+  ${CYAN}-S  --sync               ${RESET}install packages
+  ${CYAN}-Q  --query              ${RESET}query package database
+  ${CYAN}-R  --remove             ${RESET}remove packages
+${YELLOW}REPO:
+  ${CYAN}-a  --aur                ${RESET}query from AUR only
+  ${CYAN}-A  --all                ${RESET}query both from official repo and AUR
+${YELLOW}CACHING:
+  ${CYAN}-C  --cache  <database>  ${RESET}update cache holding package list
+${YELLOW}DATABASE:
+  ${CYAN} o                       ${RESET}list of explicitly installed packages (official repo)
+  ${CYAN} O                       ${RESET}list of remote packages on official repo
+  ${CYAN} a                       ${RESET}list of explicitly installed packages (AUR)
+  ${CYAN} A                       ${RESET}list of remote packages on AUR"
+
+: "${AUR_PKG_URL:=https://aur.archlinux.org/packages.gz}"
+: "${CACHE_PATH:="$HOME/.cache/pacfzf"}"
+
+: "${BACKUP_OFFICIAL:="$CACHE_PATH"/Official_E}"  # (E)xplicit installed packages
+: "${BACKUP_OFFICIAL_DEPS:="$CACHE_PATH"/Official_D}"
+: "${BACKUP_AUR:="$CACHE_PATH"/AUR_E}"
+
+: "${OFFICIAL_PKGS:="$CACHE_PATH/Official"}"
+: "${AUR_PKGS:="$CACHE_PATH/AUR"}"
+
+: "${AUR_HELPER:=trizen}"
+
+set -o errexit
+set -o pipefail
+set -o nounset
+set -E
+trap '[ "$?" -ne 55 ] || exit 55' ERR
+
+function die() { # {{{
+	echo "$*" >&2
+	exit 1
+}
+# }}}
+function usage() { # {{{
+	die "$USAGE"
+}
+# }}}
+function help() { # {{{
+	echo "$HELP"
+	exit 0
+}
+# }}}
+function search() { # {{{
+	fzf --multi --prompt='package: ' --height=30 --ansi | sed 's/ \[installed\]//'
+}
+# }}}
+function get_all_local_pkgs() { # {{{
+	pacman -Qq
+}
+# }}}
+function get_all_remote_pkgs() { # {{{
+	cat "$OFFICIAL_PKGS" "$AUR_PKGS"
+}
+# }}}
+function get_official_local_pkgs() { # {{{
+	cat "$BACKUP_OFFICIAL"
+}
+# }}}
+function get_official_remote_pkgs() { # {{{
+	cat "$OFFICIAL_PKGS"
+}
+# }}}
+function get_aur_local_pkgs() { # {{{
+	cat "$BACKUP_AUR"
+}
+# }}}
+function get_aur_remote_pkgs() { # {{{
+	cat "$AUR_PKGS"
+}
+# }}}
+function get_packages() { # {{{
+	local repo="$1"
+	local local_or_remote="$2"
+
+	if [[ "$repo" == 'official' ]]; then
+		if [[ "$local_or_remote" == local ]]; then
+			get_official_local_pkgs
+		elif [[ "$local_or_remote" == remote ]]; then
+			get_official_remote_pkgs
+		fi
+	elif [[ "$repo" == 'aur' ]]; then
+		if [[ "$local_or_remote" == local ]]; then
+			get_aur_local_pkgs
+		elif [[ "$local_or_remote" == remote ]]; then
+			get_aur_remote_pkgs
+		fi
+	elif [[ "$repo" == 'all' ]]; then
+		if [[ "$local_or_remote" == local ]]; then
+			get_all_local_pkgs
+		elif [[ "$local_or_remote" == remote ]]; then
+			get_all_remote_pkgs
+		fi
+	fi
+}
+# }}}
+function cache_official_local_pkgs() { # {{{
+	pacman -Qneq > "$BACKUP_OFFICIAL"
+}
+# }}}
+function cache_official_remote_pkgs() { # {{{
+	# save to cache to retrieve info faster
+	pacman -Sl | cut -d ' ' -f 2- |  awk -F ' ' '{printf "%s '"$CYAN"'%s'"$RESET"'\n", $1, $3}' > "$OFFICIAL_PKGS"
+}
+# }}}
+function cache_aur_local_pkgs() { # {{{
+	pacman -Qmeq > "$BACKUP_AUR"
+}
+# }}}
+function cache_aur_remote_pkgs() { # {{{
+	curl --fail --silent "$AUR_PKG_URL" | gunzip --stdout | sed 1d > "$AUR_PKGS"
+}
+# }}}
+function cache_official_deps() { # {{{
+	comm -13 <(pacman -Qqdt | sort) <(pacman -Qqdtt | sort) > "$BACKUP_OFFICIAL_DEPS"
+}
+# }}}
+function update_cache() { # {{{
+	local db="$1"
+	printf 'Caching package list...\n'
+	if [[ ! -d "$CACHE_PATH" ]]; then
+		printf 'Creating new cache at %s\n' "$CACHE_PATH"
+		mkdir -p "$CACHE_PATH"
+	fi
+
+	[[ "$db" =~ O ]] && touch "$OFFICIAL_PKGS" && cache_official_remote_pkgs
+	# backup explicit official packages
+	[[ "$db" =~ o ]] && touch "$BACKUP_OFFICIAL" "$BACKUP_OFFICIAL_DEPS" \
+		&& cache_official_local_pkgs && cache_official_deps
+	[[ "$db" =~ A ]] && touch "$AUR_PKGS" && cache_aur_remote_pkgs
+	[[ "$db" =~ a ]] && touch "$BACKUP_AUR" && cache_aur_local_pkgs
+}
+# }}}
+function install_official_backup() { # {{{
+	xargs pacman -S --needed --noconfirm < "$BACKUP_OFFICIAL"
+	xargs pacman -S --needed --noconfirm --asdeps < "$BACKUP_OFFICIAL_DEPS"
+}
+# }}}
+function require_sudo() { # {{{
+	local operation="$1" flag="$2"
+	if [[ "$operation" =~ (R|U|remove|upgrade) ]] && [[ ! "$flag" =~ (p|print) ]]; then
+		echo true
+	elif [[ "$operation" =~ (S|sync) ]] && [[ ! "$flag" =~ (g|i|l|s|p|groups|info|list|search|print) ]]; then
+		echo true
+	elif [[ "$operation" =~ (D|database) ]] && [[ ! "$flag" =~ (k|check) ]]; then
+		echo true
+	else
+		echo false
+	fi
+}
+# }}}
+function execute() { # {{{
+	local cmd operation="$1" flag="$2" repo="$3" database="$4" caching=false
+
+	if [[ ! "$operation" =~ (h|V|help|version) ]]; then
+		packages="$(get_packages "$repo" "$database" | search | tr '\n' ' ')"
+	fi
+
+	if [[ "$repo" == official ]]; then
+		cmd="pacman $operation $flag $packages"
+	elif [[ "$repo" == aur ]]; then
+		cmd="$AUR_HELPER $operation $flag $packages"
+	elif [[ "$repo" == all ]]; then
+		cmd="$AUR_HELPER $operation $flag $packages"
+	fi
+
+	if [[ "$(require_sudo "$operation" "$flag")" == true ]] && [[ ! "$cmd" =~ $AUR_HELPER ]]; then
+		cmd='sudo '$cmd
+		caching=true
+	fi
+	$cmd
+	if [[ "$caching" == true ]]; then
+		if [[ "$repo" == official ]]; then
+			update_cache Oo # O for the [installed] mark
+		else
+			update_cache a
+		fi
+	fi
+}
+# }}}
+# shellcheck disable=SC2059
+function main() { # {{{
+	# help info install remove dependencies
+	local OPTIND opt operation repo database flag
+
+	function handle_operation_opt() { # {{{
+		if [[ "${operation:-}" == '' ]]; then
+			operation="$1"
+		else
+			if [[ ! "$operation" =~ (help|h) ]]; then
+				die "${RED}"'Error:'"${RESET}"' Only one operation is allowed'
+			fi
+			operation+=" $1"
+		fi
+
+		if [[ "$operation" =~ (Q|R|query|remove) ]]; then
+			database=local
+		elif [[ "$operation" =~ (S|U|sync|update) ]]; then
+			database=remote
+		elif [[ "$operation" =~ (C|cache) ]]; then
+			local db="$2"
+			if [[ ! "$db" =~ (o|O|a|A) ]]; then
+				die "${RED}"'Error:'"${RESET}"' Invalid option parameter: '"${YELLOW}$db${RESET}"
+			fi
+			update_cache "$db"
+			exit 0
+		fi
+	}
+	# }}}
+	function handle_repo_opt() { # {{{
+		if [[ "${repo:-}" == '' ]]; then
+			if [[ "$1" == A ]] || [[ "$1" == all ]]; then
+				repo=all
+			elif [[ "$1" == a ]] || [[ "$1" == aur ]]; then
+				repo=aur
+			fi
+		else
+			die "${RED}"'Error:'"${RESET}"' Replicated options'
+		fi
+	}
+	# }}}
+
+	while getopts ':hVQRSUC:Aa-:' opt; do
+		case "${opt}" in
+			-)
+				case ${OPTARG} in # a hack to use --option
+					help|version|query|remove|sync)
+						handle_operation_opt --"$OPTARG"
+						;;
+					cache)
+						local db="${!OPTIND}"
+						OPTIND=$(( OPTIND + 1 ))
+						handle_operation_opt "$OPTARG" "$db"
+						;;
+					cache=*)
+						local db="${OPTARG#*=}"
+						handle_operation_opt "$OPTARG" "$db"
+						;;
+					all|aur)
+						handle_repo_opt "$OPTARG"
+						;;
+					*)
+						flag+=" --${OPTARG}"
+						;;
+				esac
+				;;
+			h|V|Q|R|S|U)
+				handle_operation_opt -"$opt"
+				;;
+			C)
+				handle_operation_opt "$opt" "${OPTARG}"
+				;;
+			A|a)
+				handle_repo_opt "$opt"
+				;;
+			*)
+				flag+=" -${OPTARG}"
+				;;
+		esac
+	done
+	: "${repo:=official}"
+	: "${database:=remote}"
+	: "${flag:=}"
+	[[ ! "${operation:-}" ]] && die "${RED}"'Error: '"${RESET}"'Missing operation'"${RESET}"
+
+	# printf 'operation: %s\n' "$operation"
+	# printf 'repo: %s\n' "$repo"
+	# printf 'database: %s\n' "$database"
+	# printf 'flag:%s\n' "$flag"
+	shift $((OPTIND-1))
+
+	if [[ "$operation" =~ ^(-h|--help)$ ]] && [[ "$flag" == '' ]]; then
+		help
+	fi
+	execute "$operation" "$flag" "$repo" "$database"
+}
+
+main "$@"
+# }}}
