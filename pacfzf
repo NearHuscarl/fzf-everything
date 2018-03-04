@@ -179,25 +179,29 @@ function require_sudo() { # {{{
 }
 # }}}
 function execute() { # {{{
-	local cmd operation="$1" flag="$2" repo="$3" database="$4" caching=false
+	local cmd prog operation="$1" flag="$2" repo="$3" database="$4" caching=false
 
 	if [[ ! "$operation" =~ (h|V|help|version) ]]; then
 		packages="$(get_packages "$repo" "$database" | search | tr '\n' ' ')"
 	fi
 
 	if [[ "$repo" == official ]]; then
-		cmd="pacman $operation $flag $packages"
+		prog='pacman'
 	elif [[ "$repo" == aur ]]; then
-		cmd="$AUR_HELPER $operation $flag $packages"
+		prog="$AUR_HELPER"
 	elif [[ "$repo" == all ]]; then
-		cmd="$AUR_HELPER $operation $flag $packages"
+		prog="$AUR_HELPER"
 	fi
+	cmd="$prog $operation $flag $packages"
 
 	if [[ "$(require_sudo "$operation" "$flag")" == true ]]; then
-		cmd='sudo '$cmd
+		if [[ "$prog" != "$AUR_HELPER" ]]; then
+			cmd='sudo '$cmd
+		fi
 		caching=true
 	fi
 	$cmd
+
 	if [[ "$caching" == true ]]; then
 		if [[ "$repo" == official ]]; then
 			update_cache Oo # O for the [installed] mark
