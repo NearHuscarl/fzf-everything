@@ -193,7 +193,7 @@ function execute() { # {{{
 		cmd="$AUR_HELPER $operation $flag $packages"
 	fi
 
-	if [[ "$(require_sudo "$operation" "$flag")" == true ]] && [[ ! "$cmd" =~ $AUR_HELPER ]]; then
+	if [[ "$(require_sudo "$operation" "$flag")" == true ]]; then
 		cmd='sudo '$cmd
 		caching=true
 	fi
