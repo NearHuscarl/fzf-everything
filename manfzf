@@ -7,10 +7,10 @@
 # fzf
 # vim
 
-RED="$(tput setaf 1)"
-YELLOW="$(tput setaf 3)"
-CYAN="$(tput setaf 6)"
-RESET="$(tput sgr0)"
+RED="$(tput setaf 1 2> /dev/null)"
+YELLOW="$(tput setaf 3 2> /dev/null)"
+CYAN="$(tput setaf 6 2> /dev/null)"
+RESET="$(tput sgr0 2> /dev/null)"
 
 SCRIPT_NAME=$(basename "$0")
 USAGE="${YELLOW}Usage: ${CYAN}$SCRIPT_NAME${RESET} [commands|<query>]"
